@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pip show pyinstaller)",
+      "Bash(python -m PyInstaller --onefile --windowed --name \"TemplateCapture\" --add-data \"templates;templates\" capture_gui.py)",
+      "Bash(dir \"e:\\\\bissinger-portal\\\\dist\\\\TemplateCapture.exe\")",
+      "PowerShell(\\(Get-Item \"e:\\\\bissinger-portal\\\\dist\\\\TemplateCapture.exe\"\\).Length / 1MB)",
+      "Bash(python -m PyInstaller --onefile --console --name \"TemplateCapture\" --add-data \"templates;templates\" --upx-dir \"\" capture_gui.py)",
+      "Bash(python -m PyInstaller --onefile --console --name \"TemplateCapture\" --add-data \"templates;templates\" capture_gui.py)",
+      "PowerShell(Stop-Process -Name \"TemplateCapture\" -Force -ErrorAction SilentlyContinue)",
+      "Bash(pyinstaller ElbaBot.spec --noconfirm)"
+    ]
+  }
+}
