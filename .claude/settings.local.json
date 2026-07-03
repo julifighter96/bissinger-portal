@@ -8,7 +8,9 @@
       "Bash(python -m PyInstaller --onefile --console --name \"TemplateCapture\" --add-data \"templates;templates\" --upx-dir \"\" capture_gui.py)",
       "Bash(python -m PyInstaller --onefile --console --name \"TemplateCapture\" --add-data \"templates;templates\" capture_gui.py)",
       "PowerShell(Stop-Process -Name \"TemplateCapture\" -Force -ErrorAction SilentlyContinue)",
-      "Bash(pyinstaller ElbaBot.spec --noconfirm)"
+      "Bash(pyinstaller ElbaBot.spec --noconfirm)",
+      "Bash(start \"\" \"e:\\\\bissinger-portal\\\\testportal\\\\index.html\")",
+      "Bash(pip install *)"
     ]
   }
 }

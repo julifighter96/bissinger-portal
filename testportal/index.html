@@ -476,9 +476,54 @@
       font-size: 13px;
       font-style: italic;
     }
+
+    /* ── TEST MODE BAR ───────────────────────────────────────────────── */
+    .test-bar {
+      background: #2c3e50;
+      color: #ecf0f1;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 6px 16px;
+      font-size: 12px;
+      font-family: monospace;
+    }
+    .test-bar span { color: #95a5a6; }
+    .test-bar .mode-label { font-weight: 700; color: #f39c12; }
+    .mode-toggle {
+      display: flex;
+      gap: 6px;
+    }
+    .mode-btn {
+      border: 1px solid #7f8c8d;
+      background: transparent;
+      color: #bdc3c7;
+      border-radius: 3px;
+      padding: 3px 12px;
+      font-size: 11px;
+      font-family: monospace;
+      cursor: pointer;
+    }
+    .mode-btn.active {
+      background: #f39c12;
+      border-color: #f39c12;
+      color: #2c3e50;
+      font-weight: 700;
+    }
+    .mode-btn:hover:not(.active) { background: #3d5166; }
   </style>
 </head>
 <body>
+
+<!-- ── TEST MODE BAR ──────────────────────────────────────────────────── -->
+<div class="test-bar">
+  <span>TEST-MODUS:</span>
+  <div class="mode-toggle">
+    <button class="mode-btn active" id="btnModeA" onclick="setMode('A')">Flow A – Dropdown → OK → Ja</button>
+    <button class="mode-btn"        id="btnModeB" onclick="setMode('B')">Flow B – Direkt Ja</button>
+  </div>
+  <span id="modeDesc" style="color:#f39c12;">Haken → Dropdown → OK → Ja</span>
+</div>
 
 <!-- ── SCREEN-SHARE BAR ───────────────────────────────────────────────── -->
 <div class="share-bar">
@@ -586,7 +631,7 @@
         <td class="cell-actions" id="actionCell">
           <div class="btn-grid">
             <button class="btn-action btn-cancel" title="Ablehnen"  onclick="cancelOrder()">&#x2715;</button>
-            <button class="btn-action btn-accept" title="Annehmen" id="btnHaken" onclick="openModal()">&#x2714;</button>
+            <button class="btn-action btn-accept" title="Annehmen" id="btnHaken" onclick="openModal()" style="width:auto;height:auto;padding:0;background:none;border:none;cursor:pointer;"><img src="../templates/btn_haken.PNG" width="66" height="50" style="display:block;"></button>
             <button class="btn-action btn-phone"  title="Anrufen">&#x260E;</button>
           </div>
         </td>
@@ -636,7 +681,7 @@
   </div>
   <div class="modal-footer">
     <button class="btn-abbrechen" onclick="closeModal()">Abbrechen</button>
-    <button class="btn-ok" id="btnOk" onclick="confirmStep()">Ok</button>
+    <button class="btn-ok" id="btnOk" onclick="confirmStep()" style="width:auto;height:auto;padding:0;background:none;border:none;cursor:pointer;"><img src="../templates/btn_ok.PNG" width="43" height="38" style="display:block;"></button>
   </div>
 </div>
 
@@ -644,7 +689,7 @@
 <div class="confirm-dialog" id="confirmDialog">
   <p>Wollen Sie den Fall wirklich annehmen?</p>
   <div class="confirm-btns">
-    <button class="btn-ja" id="btnJa" onclick="acceptOrder()">Ja</button>
+    <button class="btn-ja" id="btnJa" onclick="acceptOrder()" style="width:auto;height:auto;padding:0;background:none;border:none;cursor:pointer;"><img src="../templates/btn_ja.png" width="78" height="28" style="display:block;"></button>
     <button class="btn-nein" onclick="closeConfirm()">Nein</button>
   </div>
 </div>
@@ -654,8 +699,8 @@
 
 <!-- ── SCRIPTS ────────────────────────────────────────────────────────── -->
 <script>
-  const RELOAD_INTERVAL_MS = 2000;   // Seite alle 2 s neu laden
-  const ORDER_INTERVAL_MS  = 30000;  // Auftrag alle 30 s zeigen
+  const RELOAD_INTERVAL_MS = 2000;
+  const ORDER_INTERVAL_MS  = 30000;
 
   const overlay       = document.getElementById('overlay');
   const modalAnnehmen = document.getElementById('modalAnnehmen');
@@ -665,17 +710,31 @@
   const extraRow      = document.getElementById('extraRow');
   const footerText    = document.getElementById('footerText');
 
-  /* ── Auftrag sichtbar? Entscheidung per localStorage ── */
+  /* ── Test-Mode (A = Flow mit Dropdown, B = direkt Ja) ── */
+  let currentMode = localStorage.getItem('testMode') || 'A';
+
+  function setMode(m) {
+    currentMode = m;
+    localStorage.setItem('testMode', m);
+    document.getElementById('btnModeA').classList.toggle('active', m === 'A');
+    document.getElementById('btnModeB').classList.toggle('active', m === 'B');
+    document.getElementById('modeDesc').textContent = m === 'A'
+      ? 'Haken → Dropdown → OK → Ja'
+      : 'Haken → direkt Ja (kein Dropdown)';
+  }
+
+  // Initialer Zustand aus localStorage wiederherstellen
+  setMode(currentMode);
+
+  /* ── Auftrag sichtbar? ── */
   const now = Date.now();
   const nextOrderTime = parseInt(localStorage.getItem('nextOrderTime') || '0', 10);
 
   if (now < nextOrderTime) {
-    // Noch nicht Zeit → Auftrag ausblenden
     orderRow.style.display = 'none';
     extraRow.style.display = 'none';
     footerText.textContent = '0 bis 0 von 0 Einträgen';
   }
-  // Andernfalls bleibt der Auftrag sichtbar (Standard-HTML-Zustand)
 
   /* ── Modals ── */
   function isModalOpen() {
@@ -684,9 +743,16 @@
   }
 
   function openModal() {
-    overlay.classList.add('active');
-    modalAnnehmen.classList.add('active');
-    document.getElementById('ddlMinuten').value = '5';
+    if (currentMode === 'B') {
+      // Flow B: direkt Confirm-Dialog öffnen
+      overlay.classList.add('active');
+      confirmDialog.classList.add('active');
+    } else {
+      // Flow A: erst Dropdown-Modal
+      overlay.classList.add('active');
+      modalAnnehmen.classList.add('active');
+      document.getElementById('ddlMinuten').value = '5';
+    }
   }
 
   function closeModal() {
@@ -710,7 +776,6 @@
     modalAnnehmen.classList.remove('active');
     overlay.classList.remove('active');
 
-    // Nächster Auftrag in 30 s
     localStorage.setItem('nextOrderTime', Date.now() + ORDER_INTERVAL_MS);
 
     orderRow.style.display = 'none';
@@ -744,12 +809,11 @@
       if (!isModalOpen()) {
         location.reload();
       } else {
-        scheduleReload(); // Modal offen → nochmal warten
+        scheduleReload();
       }
     }, RELOAD_INTERVAL_MS);
   }
 
-  // Reload nach Modal-Schließen neu starten
   const _closeModal   = closeModal;
   const _closeConfirm = closeConfirm;
   closeModal   = function() { _closeModal();   scheduleReload(); };
