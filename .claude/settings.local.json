@@ -10,7 +10,10 @@
       "PowerShell(Stop-Process -Name \"TemplateCapture\" -Force -ErrorAction SilentlyContinue)",
       "Bash(pyinstaller ElbaBot.spec --noconfirm)",
       "Bash(start \"\" \"e:\\\\bissinger-portal\\\\testportal\\\\index.html\")",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(python -m py_compile bot.py)",
+      "Bash(pip show *)",
+      "Bash(python -m PyInstaller ElbaBot.spec --noconfirm)"
     ]
   }
 }

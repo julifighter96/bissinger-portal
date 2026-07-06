@@ -106,6 +106,40 @@ sofort ab (`FAILSAFE = True`).
 
 ---
 
+## Neustart von außerhalb (Server hängt / Fernwartung)
+
+Der Bot erkennt Hänger selbst und lässt sich zusätzlich manuell per Handy
+neu starten – ganz ohne offene Ports oder VPN, über den ohnehin schon
+genutzten ntfy.sh-Kanal:
+
+- **Automatisch:** Zeigt die Haupt-Schleife `HANG_TIMEOUT_SEC` (Standard
+  3 Minuten) lang keine Aktivität, beendet sich der Bot selbst und
+  schickt vorher eine ntfy-Warnung samt Screenshot.
+- **Manuell:** Nachricht `restart` an den Kommando-Topic
+  `elba-bot-karlsruhe-x7k9m2-cmd` senden, z.B.
+  ```
+  curl -d "restart" https://ntfy.sh/elba-bot-karlsruhe-x7k9m2-cmd
+  ```
+  oder direkt aus der ntfy-App heraus (Topic abonnieren/veröffentlichen).
+
+Damit der Prozess nach einem Selbst-Beenden auch wirklich wieder hochkommt,
+läuft auf dem Server nicht mehr direkt `ElbaBot.exe`, sondern
+[`run_bot_loop.ps1`](run_bot_loop.ps1) im Autostart. Das Skript startet
+`dist\ElbaBot.exe` in einer Endlosschleife neu, sobald der Prozess (aus
+welchem Grund auch immer) beendet wird.
+
+**Einrichtung auf dem Server:**
+1. `ElbaBot.exe` wie gewohnt bauen (liegt danach in `dist\`).
+2. Bisherige Autostart-Verknüpfung zu `ElbaBot.exe` entfernen.
+3. Neue Verknüpfung im Autostart-Ordner (`shell:startup`) mit folgendem Ziel anlegen:
+   ```
+   powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File "E:\bissinger-portal\run_bot_loop.ps1"
+   ```
+
+Restart-Log landet in `run_bot_loop.log` neben dem Skript.
+
+---
+
 ## Fehlerbehebung
 
 | Problem | Lösung |

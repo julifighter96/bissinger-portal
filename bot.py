@@ -1,6 +1,7 @@
 import sys
 import os
 import time
+import json
 import logging
 import threading
 import urllib.request
@@ -25,7 +26,6 @@ TEMPLATE_DROPDOWN  = _resource("templates/dropdown.png")
 TEMPLATE_OPTION_30 = _resource("templates/option_30.png")
 TEMPLATE_BTN_OK    = _resource("templates/btn_ok.png")
 TEMPLATE_BTN_JA    = _resource("templates/btn_ja.png")
-TEMPLATE_BTN_JA_B  = _resource("templates/btn_ja_b.png")
 
 CONFIDENCE_THRESHOLD = 0.55   # globaler Fallback
 
@@ -34,10 +34,10 @@ CONFIDENCE_HAKEN      = 0.7
 CONFIDENCE_DROPDOWN   = 0.70
 CONFIDENCE_OPTION_30  = 0.70
 CONFIDENCE_BTN_OK     = 0.6
-CONFIDENCE_BTN_JA     = 0.45
-CONFIDENCE_BTN_JA_B   = 0.70   # höher, da btn_ja_b ohne Modal-Kontext False-Positive-anfällig ist
+CONFIDENCE_BTN_JA     = 0.6
 
 MOUSE_SEARCH_RADIUS  = 200   # px um die Maus herum für OK/Ja-Suche
+JA_SEARCH_RADIUS      = 400   # px um die Bildschirmmitte herum für die Ja-Suche (Flow A & B)
 CLICK_DELAY_SEC      = 0.4   # Pause zwischen Mausbewegung und Klick
 
 POLL_INTERVAL_MS     = 500
@@ -51,6 +51,18 @@ PAGE_RELOAD_SEC      = 30   # F5 drücken wenn nach X Sekunden kein Auftrag sich
 # Handy-App: https://ntfy.sh  → Topic abonnieren, fertig.
 NTFY_TOPIC           = "elba-bot-karlsruhe-x7k9m2"
 NTFY_HEARTBEAT_SEC   = 30 * 60   # alle 30 Minuten "Bot läuft"-Ping
+
+# ---------------------------------------------------------------------------
+# Fern-Neustart via ntfy.sh + Hang-Erkennung
+# ---------------------------------------------------------------------------
+# Neustart von außerhalb auslösen (z.B. vom Handy aus der ntfy-App):
+#   curl -d "restart" https://ntfy.sh/elba-bot-karlsruhe-x7k9m2-cmd
+# Der Bot beendet sich daraufhin selbst; ein äußerer Loop (siehe
+# run_bot_loop.ps1) startet ihn automatisch neu.
+NTFY_CMD_TOPIC       = NTFY_TOPIC + "-cmd"
+CMD_POLL_SEC         = 10        # wie oft der Kommando-Topic abgefragt wird
+HANG_TIMEOUT_SEC     = 3 * 60    # keine Aktivität für X Sekunden = Bot gilt als hängend
+HANG_CHECK_SEC       = 15        # wie oft der Watchdog die Aktivität prüft
 
 # ---------------------------------------------------------------------------
 # Screenshot-Monitoring
@@ -91,6 +103,65 @@ def _heartbeat_loop():
     while True:
         time.sleep(NTFY_HEARTBEAT_SEC)
         _ntfy("Bot läuft problemlos.", title="Elba-Bot Pforzheim Heartbeat", tags="white_check_mark")
+
+
+# ---------------------------------------------------------------------------
+# Fern-Neustart & Hang-Erkennung
+# ---------------------------------------------------------------------------
+_last_activity_lock = threading.Lock()
+_last_activity = time.time()
+
+
+def _touch():
+    """Markiert, dass die Haupt-Schleife noch aktiv ist (für den Hang-Watchdog)."""
+    global _last_activity
+    with _last_activity_lock:
+        _last_activity = time.time()
+
+
+def _hang_watchdog_loop():
+    """Erzwingt einen Neustart, wenn die Haupt-Schleife zu lange keine Aktivität zeigt."""
+    while True:
+        time.sleep(HANG_CHECK_SEC)
+        with _last_activity_lock:
+            age = time.time() - _last_activity
+        if age > HANG_TIMEOUT_SEC:
+            log.critical("Keine Aktivität seit %.0fs – Bot hängt vermutlich. Erzwinge Neustart.", age)
+            _ntfy_screenshot_now()
+            _ntfy(f"Bot hängt (keine Aktivität seit {int(age)}s) – erzwinge Neustart.",
+                  title="Elba-Bot Pforzheim: Auto-Neustart", priority="high", tags="warning,repeat")
+            os._exit(1)
+
+
+def _cmd_listener_loop():
+    """Fragt den ntfy-Kommando-Topic ab und beendet den Bot bei 'restart'."""
+    since = int(time.time())
+    while True:
+        try:
+            url = f"https://ntfy.sh/{NTFY_CMD_TOPIC}/json?poll=1&since={since}"
+            with urllib.request.urlopen(url, timeout=15) as resp:
+                for raw_line in resp:
+                    line = raw_line.decode("utf-8").strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except ValueError:
+                        continue
+                    if data.get("event") != "message":
+                        continue
+                    since = max(since, int(data.get("time", since)) + 1)
+                    msg = (data.get("message") or "").strip().lower()
+                    if msg == "restart":
+                        log.critical("Neustart-Befehl per ntfy empfangen.")
+                        _ntfy("Neustart-Befehl empfangen – Bot wird jetzt beendet.",
+                              title="Elba-Bot Pforzheim: Manueller Neustart",
+                              priority="high", tags="arrows_counterclockwise")
+                        time.sleep(1)
+                        os._exit(0)
+        except Exception as exc:
+            log.warning("ntfy Kommando-Listener nicht erreichbar: %s", exc)
+        time.sleep(CMD_POLL_SEC)
 
 
 def _ntfy_screenshot_now():
@@ -210,6 +281,7 @@ def wait_and_click(template_path: str, step_name: str, confidence: float = CONFI
     interval = POLL_INTERVAL_MS / 1000.0
 
     while time.time() < deadline:
+        _touch()
         try:
             pos = find_button(template_path, confidence, region)
         except FileNotFoundError as exc:
@@ -242,9 +314,16 @@ def run_bot():
     screenshotter = threading.Thread(target=_screenshot_loop, daemon=True)
     screenshotter.start()
 
+    watchdog = threading.Thread(target=_hang_watchdog_loop, daemon=True)
+    watchdog.start()
+
+    cmd_listener = threading.Thread(target=_cmd_listener_loop, daemon=True)
+    cmd_listener.start()
+
     try:
         while True:
             try:
+                _touch()
                 _process_one_order()
             except pyautogui.FailSafeException:
                 log.critical("Failsafe ausgelöst – Bot wird beendet.")
@@ -293,7 +372,7 @@ def _flow_dropdown_ok_ja() -> bool:
     time.sleep(1.5)
 
     # Ja klicken
-    if not wait_and_click(TEMPLATE_BTN_JA, "btn_ja", CONFIDENCE_BTN_JA, mouse_region()):
+    if not wait_and_click(TEMPLATE_BTN_JA, "btn_ja", CONFIDENCE_BTN_JA, mouse_region(JA_SEARCH_RADIUS)):
         return False
 
     log.info("Flow A abgeschlossen ✅")
@@ -302,11 +381,12 @@ def _flow_dropdown_ok_ja() -> bool:
 
 def _flow_direkt_ja() -> bool:
     """Flow B: direkt Ja klicken (kein Dropdown)"""
+    # Genau wie Flow A: zur Bildschirmmitte, dann im Bereich von JA_SEARCH_RADIUS suchen.
     sw, sh = pyautogui.size()
     pyautogui.moveTo(sw // 2, sh // 2, duration=0.4)
-    time.sleep(0.5)
+    time.sleep(1.5)
 
-    if not wait_and_click(TEMPLATE_BTN_JA_B, "btn_ja_b", CONFIDENCE_BTN_JA_B, mouse_region()):
+    if not wait_and_click(TEMPLATE_BTN_JA, "btn_ja", CONFIDENCE_BTN_JA, mouse_region(JA_SEARCH_RADIUS)):
         return False
 
     log.info("Flow B abgeschlossen ✅")
@@ -329,6 +409,7 @@ def _process_one_order():
     log.debug("Schritt 1: Suche btn_haken …")
     last_reload = time.time()
     while True:
+        _touch()
         try:
             pos = find_button(TEMPLATE_HAKEN, CONFIDENCE_HAKEN)
         except FileNotFoundError as exc:
@@ -367,6 +448,7 @@ def _process_one_order():
     deadline = time.time() + DROPDOWN_DETECT_SEC
     attempt = 0
     while time.time() < deadline:
+        _touch()
         attempt += 1
         dropdown_pos = find_button(TEMPLATE_DROPDOWN, CONFIDENCE_DROPDOWN)
         if dropdown_pos:
@@ -386,6 +468,7 @@ def _process_one_order():
         # Verhindert Doppelerkennung ohne Seiten-Reload.
         deadline = time.time() + 10.0
         while time.time() < deadline:
+            _touch()
             if find_button(TEMPLATE_HAKEN, CONFIDENCE_HAKEN) is None:
                 break
             time.sleep(0.5)
