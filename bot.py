@@ -8,7 +8,7 @@ import urllib.request
 import numpy as np
 import cv2
 import pyautogui
-from PIL import ImageGrab
+from PIL import ImageGrab, ImageDraw
 
 
 def _resource(rel_path: str) -> str:
@@ -26,6 +26,7 @@ TEMPLATE_DROPDOWN  = _resource("templates/dropdown.png")
 TEMPLATE_OPTION_30 = _resource("templates/option_30.png")
 TEMPLATE_BTN_OK    = _resource("templates/btn_ok.png")
 TEMPLATE_BTN_JA    = _resource("templates/btn_ja.png")
+TEMPLATE_BTN_JA_B  = _resource("templates/btn_ja_b.png")
 
 CONFIDENCE_THRESHOLD = 0.55   # globaler Fallback
 
@@ -35,14 +36,20 @@ CONFIDENCE_DROPDOWN   = 0.70
 CONFIDENCE_OPTION_30  = 0.70
 CONFIDENCE_BTN_OK     = 0.6
 CONFIDENCE_BTN_JA     = 0.6
+CONFIDENCE_BTN_JA_B   = 0.70   # höher, da btn_ja_b ohne Modal-Kontext False-Positive-anfällig ist
 
 MOUSE_SEARCH_RADIUS  = 200   # px um die Maus herum für OK/Ja-Suche
-JA_SEARCH_RADIUS      = 400   # px um die Bildschirmmitte herum für die Ja-Suche (Flow A & B)
+JA_SEARCH_RADIUS      = 150   # px um die Bildschirmmitte herum für die Ja-Suche (Flow A & B) -> 300x300 Bereich
 CLICK_DELAY_SEC      = 0.4   # Pause zwischen Mausbewegung und Klick
 
 POLL_INTERVAL_MS     = 500
 STEP_TIMEOUT_SEC     = 5
 PAGE_RELOAD_SEC      = 30   # F5 drücken wenn nach X Sekunden kein Auftrag sichtbar
+
+# Wenn Flow B so oft in Folge erkannt wird (ohne dass zwischendurch Flow A lief
+# oder ein Auftrag wirklich abgeschlossen wurde), stimmt der Bildschirmzustand
+# vermutlich nicht mehr (z.B. kein Modal offen) -> harter Reset per F5 statt Endlosschleife.
+FLOW_B_RESET_THRESHOLD = 2
 
 # ---------------------------------------------------------------------------
 # Heartbeat-Monitoring via ntfy.sh
@@ -111,6 +118,14 @@ def _heartbeat_loop():
 _last_activity_lock = threading.Lock()
 _last_activity = time.time()
 
+# Zuletzt verwendeter Suchbereich (x, y, breite, hoehe) von find_button(),
+# fuer die rot eingezeichnete Markierung auf Fehler-Screenshots.
+_last_search_region = None
+
+# Zaehlt aufeinanderfolgende Flow-B-Durchlaeufe ohne echten Abschluss
+# (siehe FLOW_B_RESET_THRESHOLD). Wird bei Flow A oder echtem Abschluss zurueckgesetzt.
+_consecutive_flow_b_count = 0
+
 
 def _touch():
     """Markiert, dass die Haupt-Schleife noch aktiv ist (für den Hang-Watchdog)."""
@@ -165,12 +180,20 @@ def _cmd_listener_loop():
 
 
 def _ntfy_screenshot_now():
-    """Macht einen Screenshot und schickt ihn sofort als Anhang via ntfy.sh."""
+    """Macht einen Screenshot, zeichnet den zuletzt durchsuchten Bereich rot ein
+    und schickt ihn sofort als Anhang via ntfy.sh."""
     try:
         os.makedirs(SCREENSHOT_DIR, exist_ok=True)
         ts = time.strftime("%Y-%m-%d_%H-%M-%S")
         path = os.path.join(SCREENSHOT_DIR, f"screen_{ts}.png")
-        ImageGrab.grab().save(path)
+
+        img = ImageGrab.grab()
+        if _last_search_region is not None:
+            rx, ry, rw, rh = _last_search_region
+            draw = ImageDraw.Draw(img)
+            draw.rectangle([rx, ry, rx + rw, ry + rh], outline="red", width=4)
+        img.save(path)
+
         with open(path, "rb") as f:
             img_data = f.read()
         req = urllib.request.Request(
@@ -229,6 +252,9 @@ def find_button(template_path: str, confidence: float, region=None):
     region = (x, y, breite, hoehe) schränkt den Suchbereich ein.
     Gibt immer das beste Match zurück, sofern es >= confidence ist.
     """
+    global _last_search_region
+    _last_search_region = region
+
     screenshot = np.array(ImageGrab.grab())
     screenshot_gray = cv2.cvtColor(screenshot, cv2.COLOR_RGB2GRAY)
 
@@ -380,13 +406,14 @@ def _flow_dropdown_ok_ja() -> bool:
 
 
 def _flow_direkt_ja() -> bool:
-    """Flow B: direkt Ja klicken (kein Dropdown)"""
-    # Genau wie Flow A: zur Bildschirmmitte, dann im Bereich von JA_SEARCH_RADIUS suchen.
+    """Flow B: direkt Ja klicken (kein Dropdown). Eigenes Template/Threshold,
+    da der Dialog hier ohne Dropdown/OK-Kontext erscheint und btn_ja.png
+    (aus Flow A) in diesem Zustand zu Fehltreffern neigt."""
     sw, sh = pyautogui.size()
     pyautogui.moveTo(sw // 2, sh // 2, duration=0.4)
     time.sleep(1.5)
 
-    if not wait_and_click(TEMPLATE_BTN_JA, "btn_ja", CONFIDENCE_BTN_JA, mouse_region(JA_SEARCH_RADIUS)):
+    if not wait_and_click(TEMPLATE_BTN_JA_B, "btn_ja_b", CONFIDENCE_BTN_JA_B, mouse_region(JA_SEARCH_RADIUS)):
         return False
 
     log.info("Flow B abgeschlossen ✅")
@@ -400,6 +427,7 @@ def _process_one_order():
       Flow A: Dropdown sichtbar → Dropdown → OK → Ja
       Flow B: kein Dropdown → direkt Ja
     """
+    global _consecutive_flow_b_count
     interval = POLL_INTERVAL_MS / 1000.0
 
     # ------------------------------------------------------------------
@@ -458,9 +486,29 @@ def _process_one_order():
         time.sleep(DROPDOWN_POLL_SEC)
 
     if dropdown_pos:
+        _consecutive_flow_b_count = 0
         success = _flow_dropdown_ok_ja()
     else:
-        log.info("Flow B erkannt (Dropdown nach %d Versuch(en) nicht gefunden).", attempt)
+        _consecutive_flow_b_count += 1
+        log.info("Flow B erkannt (Dropdown nach %d Versuch(en) nicht gefunden, %d. Mal in Folge ohne Reset).",
+                  attempt, _consecutive_flow_b_count)
+
+        if _consecutive_flow_b_count >= FLOW_B_RESET_THRESHOLD:
+            # Flow B wiederholt sich verdächtig oft in Folge, ohne dass zwischendurch
+            # Flow A lief oder ein Auftrag wirklich fertig wurde -> vermutlich stimmt
+            # der angenommene Bildschirmzustand nicht mehr (z.B. kein Modal offen,
+            # Bot "haengt" im Start-Bildschirm). Harter Reset statt Endlosschleife.
+            log.warning("Flow B %d× in Folge ohne Reset – erzwinge harten Reset (F5).",
+                        _consecutive_flow_b_count)
+            _ntfy_screenshot_now()
+            _ntfy(f"Flow B {_consecutive_flow_b_count}x in Folge erkannt – vermutlich hängender Zustand, "
+                  f"erzwinge Reset (F5).",
+                  title="Elba-Bot Pforzheim: Auto-Reset", priority="high", tags="warning,repeat")
+            _consecutive_flow_b_count = 0
+            pyautogui.hotkey('f5')
+            time.sleep(2.0)
+            return
+
         success = _flow_direkt_ja()
 
     if success:
@@ -480,6 +528,7 @@ def _process_one_order():
                   title="Elba-Bot Pforzheim: Fehler", priority="high", tags="warning")
             time.sleep(5.0)
             return
+        _consecutive_flow_b_count = 0
         _ntfy("Auftrag erfolgreich abgeschlossen ✅",
               title="Elba-Bot Pforzheim: Auftrag erledigt", priority="low", tags="white_check_mark,tada")
         time.sleep(1.0)
