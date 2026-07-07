@@ -140,6 +140,24 @@ Restart-Log landet in `run_bot_loop.log` neben dem Skript.
 
 ---
 
+## Fester Suchbereich (optional, empfohlen)
+
+Standardmäßig sucht der Bot den Dropdown-Button über den ganzen Bildschirm
+und Ja/OK im Bereich um die Maus bzw. Bildschirmmitte. Das kann in seltenen
+Fällen zu Fehltreffern außerhalb des eigentlichen Bestätigungs-Dialogs führen.
+
+Um das auszuschließen, kann man in `capture_gui.py` (bzw. `TemplateCapture.exe`)
+am Ende einen festen Suchbereich ziehen: einen Rahmen um die Stelle, an der
+der Bestätigungs-Dialog immer erscheint (z.B. Bildschirmmitte). Der Bereich
+wird in `search_region.json` gespeichert und danach von `bot.py` für **alle**
+Button-Suchen in Flow A und Flow B verwendet – der Bot durchsucht dann nur
+noch diesen Bereich statt des ganzen Bildschirms.
+
+Ohne `search_region.json` läuft der Bot unverändert wie bisher (Vollbild-
+bzw. maus-relative Suche).
+
+---
+
 ## Fehlerbehebung
 
 | Problem | Lösung |

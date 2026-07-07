@@ -7,6 +7,7 @@ Einfach einen Rahmen um den gewünschten Button ziehen – fertig.
 
 import os
 import sys
+import json
 import tkinter as tk
 from tkinter import messagebox
 import numpy as np
@@ -19,6 +20,8 @@ TEMPLATES = [
     ("templates/btn_ok.png",     "OK-Button"),
     ("templates/btn_ja.png",     "Ja-Button      (Bestätigungs-Dialog)"),
 ]
+
+SEARCH_REGION_FILE = "search_region.json"
 
 os.makedirs("templates", exist_ok=True)
 
@@ -168,6 +171,42 @@ def capture_one(save_path: str, label: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Aufnahme des festen Suchbereichs (statt Bild wird nur die Position/Größe
+# als JSON gespeichert; bot.py schränkt damit ALLE Button-Suchen in Flow A
+# & B auf diesen Bereich ein, statt Vollbild bzw. maus-relativ zu suchen).
+# ---------------------------------------------------------------------------
+def capture_search_region() -> bool:
+    label = "Such-/Modal-Bereich (wird für ALLE Flows verwendet)"
+    while True:
+        screenshot = ImageGrab.grab()
+
+        overlay = SelectionOverlay(screenshot, label)
+        overlay.mainloop()
+
+        if overlay.result is None:
+            skip = messagebox.askyesno(
+                "Überspringen?",
+                "Der Suchbereich wurde nicht markiert.\n\nDiesen Schritt überspringen?"
+            )
+            return not skip
+
+        x1, y1, x2, y2 = overlay.result
+        region_img = screenshot.crop((x1, y1, x2, y2))
+
+        preview = PreviewWindow(region_img, label)
+        preview.mainloop()
+
+        if preview.confirmed:
+            data = {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
+            with open(SEARCH_REGION_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            print(f"  ✓  Suchbereich gespeichert: {SEARCH_REGION_FILE}  ({data})")
+            return True
+
+        print("  ↺  Aufnahme wird wiederholt …")
+
+
+# ---------------------------------------------------------------------------
 # Hauptprogramm
 # ---------------------------------------------------------------------------
 def main():
@@ -202,6 +241,30 @@ def main():
     for save_path, label, ok in results:
         status = "OK        " if ok else "ÜBERSPRUNGEN"
         print(f"  [{status}]  {save_path}")
+    print()
+
+    print("=" * 55)
+    print("  Optional: fester Suchbereich für Flow A & B")
+    print("=" * 55)
+    print("  Schränkt ALLE Button-Suchen (Dropdown, OK, Ja) auf einen")
+    print("  von dir gezogenen Bereich ein, statt den ganzen Bildschirm")
+    print("  bzw. den Bereich um die Maus zu durchsuchen. Verhindert,")
+    print("  dass versehentlich etwas außerhalb des Dialogs erkannt wird.")
+    print("  Ziehe dazu einen Rahmen um den Bereich, in dem der")
+    print("  Bestätigungs-Dialog immer erscheint (z.B. Bildschirmmitte).")
+    print()
+    answer = input("  Jetzt festen Suchbereich ziehen? (j/n): ").strip().lower()
+    if answer == "j":
+        try:
+            region_ok = capture_search_region()
+        except Exception as exc:
+            print(f"  FEHLER: {exc}")
+            region_ok = False
+        status = "OK        " if region_ok else "ÜBERSPRUNGEN"
+        print(f"  [{status}]  {SEARCH_REGION_FILE}")
+    else:
+        print(f"  Übersprungen – {SEARCH_REGION_FILE} bleibt unverändert (falls vorhanden).")
+
     print()
     print("  Du kannst jetzt 'python bot.py' starten.")
     print()

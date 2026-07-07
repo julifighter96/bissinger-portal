@@ -244,6 +244,35 @@ log = logging.getLogger("elba-bot")
 
 
 # ---------------------------------------------------------------------------
+# Fest definierter Suchbereich (per capture_gui.py als "Suchbereich" gezogen)
+# ---------------------------------------------------------------------------
+SEARCH_REGION_FILE = _resource("search_region.json")
+
+
+def _load_search_region():
+    """Laedt den manuell gezogenen Modal-Suchbereich aus search_region.json,
+    falls vorhanden. Wird fuer alle Button-Suchen in Flow A & B verwendet, um
+    Fehltreffer ausserhalb des Bestaetigungs-Dialogs zu vermeiden. Ohne diese
+    Datei laeuft der Bot wie bisher (Vollbild- bzw. maus-relative Suche)."""
+    try:
+        with open(SEARCH_REGION_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        region = (data["x"], data["y"], data["w"], data["h"])
+        log.info("Fester Suchbereich geladen: %s", region)
+        return region
+    except FileNotFoundError:
+        log.info("Kein fester Suchbereich konfiguriert (%s nicht gefunden) – "
+                  "nutze Vollbild-/Maus-relative Suche.", SEARCH_REGION_FILE)
+        return None
+    except Exception as exc:
+        log.warning("Suchbereich konnte nicht geladen werden: %s", exc)
+        return None
+
+
+MODAL_SEARCH_REGION = _load_search_region()
+
+
+# ---------------------------------------------------------------------------
 # Template Matching
 # ---------------------------------------------------------------------------
 def find_button(template_path: str, confidence: float, region=None):
@@ -370,10 +399,22 @@ def run_bot():
         raise
 
 
+def _ja_search_region():
+    """Bereich für die Ja-Suche: fester MODAL_SEARCH_REGION falls konfiguriert
+    (siehe capture_gui.py, 'Suchbereich'), sonst wie bisher Maus zur
+    Bildschirmmitte und dortiger Radius (JA_SEARCH_RADIUS)."""
+    if MODAL_SEARCH_REGION is not None:
+        return MODAL_SEARCH_REGION
+    sw, sh = pyautogui.size()
+    pyautogui.moveTo(sw // 2, sh // 2, duration=0.4)
+    time.sleep(1.5)
+    return mouse_region(JA_SEARCH_RADIUS)
+
+
 def _flow_dropdown_ok_ja() -> bool:
     """Flow A: Dropdown → 30 Min → OK → Ja"""
     # Schritt 3: Dropdown klicken
-    if not wait_and_click(TEMPLATE_DROPDOWN, "dropdown", CONFIDENCE_DROPDOWN):
+    if not wait_and_click(TEMPLATE_DROPDOWN, "dropdown", CONFIDENCE_DROPDOWN, MODAL_SEARCH_REGION):
         return False
 
     time.sleep(1.0)
@@ -389,16 +430,12 @@ def _flow_dropdown_ok_ja() -> bool:
     time.sleep(1.0)
 
     # Schritt 7: OK klicken
-    if not wait_and_click(TEMPLATE_BTN_OK, "btn_ok", CONFIDENCE_BTN_OK, mouse_region()):
+    ok_region = MODAL_SEARCH_REGION if MODAL_SEARCH_REGION is not None else mouse_region()
+    if not wait_and_click(TEMPLATE_BTN_OK, "btn_ok", CONFIDENCE_BTN_OK, ok_region):
         return False
 
-    # Maus zur Bildschirmmitte
-    sw, sh = pyautogui.size()
-    pyautogui.moveTo(sw // 2, sh // 2, duration=0.4)
-    time.sleep(1.5)
-
     # Ja klicken
-    if not wait_and_click(TEMPLATE_BTN_JA, "btn_ja", CONFIDENCE_BTN_JA, mouse_region(JA_SEARCH_RADIUS)):
+    if not wait_and_click(TEMPLATE_BTN_JA, "btn_ja", CONFIDENCE_BTN_JA, _ja_search_region()):
         return False
 
     log.info("Flow A abgeschlossen ✅")
@@ -409,11 +446,7 @@ def _flow_direkt_ja() -> bool:
     """Flow B: direkt Ja klicken (kein Dropdown). Eigenes Template/Threshold,
     da der Dialog hier ohne Dropdown/OK-Kontext erscheint und btn_ja.png
     (aus Flow A) in diesem Zustand zu Fehltreffern neigt."""
-    sw, sh = pyautogui.size()
-    pyautogui.moveTo(sw // 2, sh // 2, duration=0.4)
-    time.sleep(1.5)
-
-    if not wait_and_click(TEMPLATE_BTN_JA_B, "btn_ja_b", CONFIDENCE_BTN_JA_B, mouse_region(JA_SEARCH_RADIUS)):
+    if not wait_and_click(TEMPLATE_BTN_JA_B, "btn_ja_b", CONFIDENCE_BTN_JA_B, _ja_search_region()):
         return False
 
     log.info("Flow B abgeschlossen ✅")
@@ -478,7 +511,7 @@ def _process_one_order():
     while time.time() < deadline:
         _touch()
         attempt += 1
-        dropdown_pos = find_button(TEMPLATE_DROPDOWN, CONFIDENCE_DROPDOWN)
+        dropdown_pos = find_button(TEMPLATE_DROPDOWN, CONFIDENCE_DROPDOWN, MODAL_SEARCH_REGION)
         if dropdown_pos:
             log.info("Flow A erkannt (Dropdown nach %d Versuch(en) sichtbar).", attempt)
             break
