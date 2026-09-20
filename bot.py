@@ -36,7 +36,7 @@ CONFIDENCE_DROPDOWN   = 0.70
 CONFIDENCE_OPTION_30  = 0.70
 CONFIDENCE_BTN_OK     = 0.6
 CONFIDENCE_BTN_JA     = 0.6
-CONFIDENCE_BTN_JA_B   = 0.70   # höher, da btn_ja_b ohne Modal-Kontext False-Positive-anfällig ist
+CONFIDENCE_BTN_JA_B   = 0.6   # höher, da btn_ja_b ohne Modal-Kontext False-Positive-anfällig ist
 
 MOUSE_SEARCH_RADIUS  = 200   # px um die Maus herum für OK/Ja-Suche
 JA_SEARCH_RADIUS      = 150   # px um die Bildschirmmitte herum für die Ja-Suche (Flow A & B) -> 300x300 Bereich
@@ -244,32 +244,62 @@ log = logging.getLogger("elba-bot")
 
 
 # ---------------------------------------------------------------------------
-# Fest definierter Suchbereich (per capture_gui.py als "Suchbereich" gezogen)
+# Pro Schritt fest definierte Suchbereiche (per capture_gui.py gezogen)
 # ---------------------------------------------------------------------------
-SEARCH_REGION_FILE = _resource("search_region.json")
+STEP_REGIONS_FILE = _resource("step_regions.json")
 
 
-def _load_search_region():
-    """Laedt den manuell gezogenen Modal-Suchbereich aus search_region.json,
-    falls vorhanden. Wird fuer alle Button-Suchen in Flow A & B verwendet, um
-    Fehltreffer ausserhalb des Bestaetigungs-Dialogs zu vermeiden. Ohne diese
-    Datei laeuft der Bot wie bisher (Vollbild- bzw. maus-relative Suche)."""
+def _load_step_regions():
+    """Laedt die pro Schritt manuell gezogenen Suchbereiche aus step_regions.json,
+    falls vorhanden (Keys: haken, dropdown, btn_ok, btn_ja, btn_ja_b). Fehlt ein
+    Eintrag oder die ganze Datei, sucht der jeweilige Schritt wie bisher
+    (Vollbild- bzw. maus-relative Suche)."""
     try:
-        with open(SEARCH_REGION_FILE, "r", encoding="utf-8") as f:
+        with open(STEP_REGIONS_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-        region = (data["x"], data["y"], data["w"], data["h"])
-        log.info("Fester Suchbereich geladen: %s", region)
-        return region
+        regions = {key: (v["x"], v["y"], v["w"], v["h"]) for key, v in data.items()}
+        log.info("Schritt-Suchbereiche geladen: %s", list(regions.keys()))
+        return regions
     except FileNotFoundError:
-        log.info("Kein fester Suchbereich konfiguriert (%s nicht gefunden) – "
-                  "nutze Vollbild-/Maus-relative Suche.", SEARCH_REGION_FILE)
-        return None
+        log.info("Keine Schritt-Suchbereiche konfiguriert (%s nicht gefunden) – "
+                  "nutze Vollbild-/Maus-relative Suche.", STEP_REGIONS_FILE)
+        return {}
     except Exception as exc:
-        log.warning("Suchbereich konnte nicht geladen werden: %s", exc)
-        return None
+        log.warning("Schritt-Suchbereiche konnten nicht geladen werden: %s", exc)
+        return {}
 
 
-MODAL_SEARCH_REGION = _load_search_region()
+STEP_REGIONS = _load_step_regions()
+
+
+# ---------------------------------------------------------------------------
+# Fest aufgenommene Klick-Positionen (per capture_click_point.py)
+# ---------------------------------------------------------------------------
+CLICK_POINTS_FILE = _resource("click_points.json")
+
+
+def _load_click_points():
+    """Laedt fest aufgenommene Klick-Positionen aus click_points.json, falls
+    vorhanden (siehe capture_click_point.py). Aktuell nur fuer btn_ja_b
+    (Flow B) genutzt, da dieser Bestaetigungs-Dialog immer an derselben
+    Bildschirmposition erscheint und Bildsuche fuer den fast einfarbigen
+    Ja-Button unzuverlaessig war. Fehlt die Datei oder der Eintrag, faellt
+    der jeweilige Schritt auf die bisherige Bildsuche zurueck."""
+    try:
+        with open(CLICK_POINTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        points = {key: (v["x"], v["y"]) for key, v in data.items()}
+        log.info("Fixe Klick-Positionen geladen: %s", list(points.keys()))
+        return points
+    except FileNotFoundError:
+        log.info("Keine fixen Klick-Positionen konfiguriert (%s nicht gefunden).", CLICK_POINTS_FILE)
+        return {}
+    except Exception as exc:
+        log.warning("Klick-Positionen konnten nicht geladen werden: %s", exc)
+        return {}
+
+
+CLICK_POINTS = _load_click_points()
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +386,18 @@ def wait_and_click(template_path: str, step_name: str, confidence: float = CONFI
     return False
 
 
+def click_at_point(point, step_name: str) -> bool:
+    """Bewegt die Maus zu einer fest aufgenommenen Position (siehe
+    capture_click_point.py) und klickt direkt, ohne Bildsuche."""
+    x, y = point
+    _touch()
+    log.info("[%s] fixe Position (%d, %d) – bewege Maus.", step_name, x, y)
+    pyautogui.moveTo(x, y, duration=0.3)
+    time.sleep(CLICK_DELAY_SEC)
+    pyautogui.click()
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Haupt-Bot-Loop
 # ---------------------------------------------------------------------------
@@ -399,12 +441,13 @@ def run_bot():
         raise
 
 
-def _ja_search_region():
-    """Bereich für die Ja-Suche: fester MODAL_SEARCH_REGION falls konfiguriert
-    (siehe capture_gui.py, 'Suchbereich'), sonst wie bisher Maus zur
-    Bildschirmmitte und dortiger Radius (JA_SEARCH_RADIUS)."""
-    if MODAL_SEARCH_REGION is not None:
-        return MODAL_SEARCH_REGION
+def _ja_search_region(step_key: str):
+    """Bereich für die Ja-Suche: fester Suchbereich aus step_regions.json
+    falls fuer step_key konfiguriert (siehe capture_gui.py), sonst wie bisher
+    Maus zur Bildschirmmitte und dortiger Radius (JA_SEARCH_RADIUS)."""
+    region = STEP_REGIONS.get(step_key)
+    if region is not None:
+        return region
     sw, sh = pyautogui.size()
     pyautogui.moveTo(sw // 2, sh // 2, duration=0.4)
     time.sleep(1.5)
@@ -414,7 +457,7 @@ def _ja_search_region():
 def _flow_dropdown_ok_ja() -> bool:
     """Flow A: Dropdown → 30 Min → OK → Ja"""
     # Schritt 3: Dropdown klicken
-    if not wait_and_click(TEMPLATE_DROPDOWN, "dropdown", CONFIDENCE_DROPDOWN, MODAL_SEARCH_REGION):
+    if not wait_and_click(TEMPLATE_DROPDOWN, "dropdown", CONFIDENCE_DROPDOWN, STEP_REGIONS.get("dropdown")):
         return False
 
     time.sleep(1.0)
@@ -430,12 +473,12 @@ def _flow_dropdown_ok_ja() -> bool:
     time.sleep(1.0)
 
     # Schritt 7: OK klicken
-    ok_region = MODAL_SEARCH_REGION if MODAL_SEARCH_REGION is not None else mouse_region()
+    ok_region = STEP_REGIONS.get("btn_ok") or mouse_region()
     if not wait_and_click(TEMPLATE_BTN_OK, "btn_ok", CONFIDENCE_BTN_OK, ok_region):
         return False
 
     # Ja klicken
-    if not wait_and_click(TEMPLATE_BTN_JA, "btn_ja", CONFIDENCE_BTN_JA, _ja_search_region()):
+    if not wait_and_click(TEMPLATE_BTN_JA, "btn_ja", CONFIDENCE_BTN_JA, _ja_search_region("btn_ja")):
         return False
 
     log.info("Flow A abgeschlossen ✅")
@@ -443,10 +486,19 @@ def _flow_dropdown_ok_ja() -> bool:
 
 
 def _flow_direkt_ja() -> bool:
-    """Flow B: direkt Ja klicken (kein Dropdown). Eigenes Template/Threshold,
-    da der Dialog hier ohne Dropdown/OK-Kontext erscheint und btn_ja.png
-    (aus Flow A) in diesem Zustand zu Fehltreffern neigt."""
-    if not wait_and_click(TEMPLATE_BTN_JA_B, "btn_ja_b", CONFIDENCE_BTN_JA_B, _ja_search_region()):
+    """Flow B: direkt Ja klicken (kein Dropdown).
+    Nutzt eine fest aufgenommene Klick-Position (click_points.json, siehe
+    capture_click_point.py), da dieser Bestaetigungs-Dialog immer an
+    derselben Stelle erscheint und Bildsuche fuer den fast einfarbigen
+    Ja-Button unzuverlaessig war. Ohne aufgenommenen Punkt faellt der
+    Schritt auf die bisherige Bildsuche zurueck."""
+    point = CLICK_POINTS.get("btn_ja_b")
+    if point is not None:
+        click_at_point(point, "btn_ja_b")
+        log.info("Flow B abgeschlossen ✅")
+        return True
+
+    if not wait_and_click(TEMPLATE_BTN_JA_B, "btn_ja_b", CONFIDENCE_BTN_JA_B, _ja_search_region("btn_ja_b")):
         return False
 
     log.info("Flow B abgeschlossen ✅")
@@ -472,7 +524,7 @@ def _process_one_order():
     while True:
         _touch()
         try:
-            pos = find_button(TEMPLATE_HAKEN, CONFIDENCE_HAKEN)
+            pos = find_button(TEMPLATE_HAKEN, CONFIDENCE_HAKEN, STEP_REGIONS.get("haken"))
         except FileNotFoundError as exc:
             log.error("Template-Datei fehlt: %s", exc)
             time.sleep(2)
@@ -511,7 +563,7 @@ def _process_one_order():
     while time.time() < deadline:
         _touch()
         attempt += 1
-        dropdown_pos = find_button(TEMPLATE_DROPDOWN, CONFIDENCE_DROPDOWN, MODAL_SEARCH_REGION)
+        dropdown_pos = find_button(TEMPLATE_DROPDOWN, CONFIDENCE_DROPDOWN, STEP_REGIONS.get("dropdown"))
         if dropdown_pos:
             log.info("Flow A erkannt (Dropdown nach %d Versuch(en) sichtbar).", attempt)
             break
@@ -550,7 +602,7 @@ def _process_one_order():
         deadline = time.time() + 10.0
         while time.time() < deadline:
             _touch()
-            if find_button(TEMPLATE_HAKEN, CONFIDENCE_HAKEN) is None:
+            if find_button(TEMPLATE_HAKEN, CONFIDENCE_HAKEN, STEP_REGIONS.get("haken")) is None:
                 break
             time.sleep(0.5)
         else:

@@ -13,7 +13,17 @@
       "Bash(pip install *)",
       "Bash(python -m py_compile bot.py)",
       "Bash(pip show *)",
-      "Bash(python -m PyInstaller ElbaBot.spec --noconfirm)"
+      "Bash(python -m PyInstaller ElbaBot.spec --noconfirm)",
+      "Bash(pyinstaller TemplateCapture.spec --noconfirm)",
+      "Bash(python -m py_compile bot.py capture_gui.py)",
+      "Bash(python3 -)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -m py_compile bot.py capture_click_point.py)",
+      "Bash(python3 -m PyInstaller --version)",
+      "Bash(\"/c/Users/julia/AppData/Local/Programs/Python/Python313/python.exe\" -m PyInstaller --version)",
+      "Bash(\"/c/Users/julia/AppData/Local/Programs/Python/Python313/python.exe\" -m PyInstaller ElbaBot.spec --noconfirm)",
+      "Bash(\"/c/Users/julia/AppData/Local/Programs/Python/Python313/python.exe\" -m PyInstaller TemplateCapture.spec --noconfirm)",
+      "Bash(\"/c/Users/julia/AppData/Local/Programs/Python/Python313/python.exe\" -m PyInstaller ClickPointCapture.spec --noconfirm)"
     ]
   }
 }

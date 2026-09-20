@@ -1,8 +1,11 @@
 """
 capture_gui.py
 --------------
-Template-Aufnahme per Maus-Ziehen über einem Vollbild-Overlay.
-Einfach einen Rahmen um den gewünschten Button ziehen – fertig.
+Bereichs-Auswahl per Maus-Ziehen über einem Vollbild-Overlay.
+Nimmt KEINE Template-Bilder mehr auf (die liegen bereits in templates/),
+sondern legt pro Schritt nur einen Suchbereich (x, y, breite, hoehe) fest,
+auf den bot.py die jeweilige Bildsuche einschränkt. Einfach einen Rahmen um
+die Stelle ziehen, an der der jeweilige Button/Dialog immer erscheint.
 """
 
 import os
@@ -10,20 +13,17 @@ import sys
 import json
 import tkinter as tk
 from tkinter import messagebox
-import numpy as np
 from PIL import ImageGrab, ImageTk
 
-TEMPLATES = [
-    ("templates/btn_haken.png",  "Haken-Button  (neuer Auftrag sichtbar)"),
-    ("templates/dropdown.png",   "Dropdown       (Zeitauswahl öffnen)"),
-    ("templates/option_30.png",  "Option 30 Min  (im Dropdown)"),
-    ("templates/btn_ok.png",     "OK-Button"),
-    ("templates/btn_ja.png",     "Ja-Button      (Bestätigungs-Dialog)"),
+STEPS = [
+    ("haken",    "Haken-Button   (neuer Auftrag sichtbar)"),
+    ("dropdown", "Dropdown       (Zeitauswahl öffnen)"),
+    ("btn_ok",   "OK-Button"),
+    ("btn_ja",   "Ja-Button      (Bestätigung, Flow A mit Dropdown)"),
+    ("btn_ja_b", "Ja-Button      (Bestätigung, Flow B ohne Dropdown)"),
 ]
 
-SEARCH_REGION_FILE = "search_region.json"
-
-os.makedirs("templates", exist_ok=True)
+STEP_REGIONS_FILE = "step_regions.json"
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ class SelectionOverlay(tk.Tk):
         # Anleitung oben mittig
         self.canvas.create_text(
             screenshot.width // 2, 22,
-            text=f"Ziehe einen Rahmen um:  {label}    |    ESC = Überspringen",
+            text=f"Ziehe einen Rahmen um den Suchbereich für:  {label}    |    ESC = Überspringen",
             fill="yellow", font=("Segoe UI", 13, "bold"), anchor="center"
         )
 
@@ -97,7 +97,7 @@ class SelectionOverlay(tk.Tk):
 
 
 # ---------------------------------------------------------------------------
-# Vorschau-Fenster: zeigt den Ausschnitt + Speichern / Wiederholen
+# Vorschau-Fenster: zeigt den gewählten Bereich + Speichern / Wiederholen
 # ---------------------------------------------------------------------------
 class PreviewWindow(tk.Tk):
     def __init__(self, region, label: str):
@@ -123,7 +123,7 @@ class PreviewWindow(tk.Tk):
 
         frm = tk.Frame(self)
         frm.pack(pady=10)
-        tk.Button(frm, text="✓  Speichern", width=13, bg="#4caf50", fg="white",
+        tk.Button(frm, text="✓  Übernehmen", width=13, bg="#4caf50", fg="white",
                   font=("Segoe UI", 10, "bold"),
                   command=self._save).pack(side="left", padx=6)
         tk.Button(frm, text="↺  Wiederholen", width=13, bg="#f44336", fg="white",
@@ -139,44 +139,11 @@ class PreviewWindow(tk.Tk):
 
 
 # ---------------------------------------------------------------------------
-# Aufnahme eines einzelnen Templates
+# Aufnahme eines einzelnen Suchbereichs (kein Bild wird gespeichert)
 # ---------------------------------------------------------------------------
-def capture_one(save_path: str, label: str) -> bool:
-    while True:
-        # Screenshot BEVOR das Overlay erscheint
-        screenshot = ImageGrab.grab()
-
-        overlay = SelectionOverlay(screenshot, label)
-        overlay.mainloop()
-
-        if overlay.result is None:
-            skip = messagebox.askyesno(
-                "Überspringen?",
-                f"'{label}' wurde nicht markiert.\n\nDieses Template überspringen?"
-            )
-            return not skip   # False = überspringen, Schleife weiter oben bricht ab
-
-        x1, y1, x2, y2 = overlay.result
-        region = screenshot.crop((x1, y1, x2, y2))
-
-        preview = PreviewWindow(region, label)
-        preview.mainloop()
-
-        if preview.confirmed:
-            region.save(save_path)
-            print(f"  ✓  Gespeichert: {save_path}  ({region.width}×{region.height} px)")
-            return True
-
-        print("  ↺  Aufnahme wird wiederholt …")
-
-
-# ---------------------------------------------------------------------------
-# Aufnahme des festen Suchbereichs (statt Bild wird nur die Position/Größe
-# als JSON gespeichert; bot.py schränkt damit ALLE Button-Suchen in Flow A
-# & B auf diesen Bereich ein, statt Vollbild bzw. maus-relativ zu suchen).
-# ---------------------------------------------------------------------------
-def capture_search_region() -> bool:
-    label = "Such-/Modal-Bereich (wird für ALLE Flows verwendet)"
+def capture_step_region(label: str):
+    """Lässt einen Bereich ziehen und liefert (x, y, breite, hoehe) zurück,
+    oder None, wenn der Schritt übersprungen wurde."""
     while True:
         screenshot = ImageGrab.grab()
 
@@ -186,9 +153,11 @@ def capture_search_region() -> bool:
         if overlay.result is None:
             skip = messagebox.askyesno(
                 "Überspringen?",
-                "Der Suchbereich wurde nicht markiert.\n\nDiesen Schritt überspringen?"
+                f"Für '{label}' wurde kein Bereich markiert.\n\nDiesen Schritt überspringen?"
             )
-            return not skip
+            if skip:
+                return None
+            continue   # nochmal versuchen
 
         x1, y1, x2, y2 = overlay.result
         region_img = screenshot.crop((x1, y1, x2, y2))
@@ -197,13 +166,9 @@ def capture_search_region() -> bool:
         preview.mainloop()
 
         if preview.confirmed:
-            data = {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
-            with open(SEARCH_REGION_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-            print(f"  ✓  Suchbereich gespeichert: {SEARCH_REGION_FILE}  ({data})")
-            return True
+            return (x1, y1, x2 - x1, y2 - y1)
 
-        print("  ↺  Aufnahme wird wiederholt …")
+        print("  ↺  Auswahl wird wiederholt …")
 
 
 # ---------------------------------------------------------------------------
@@ -212,60 +177,62 @@ def capture_search_region() -> bool:
 def main():
     print()
     print("=" * 55)
-    print("  Elba-Bot – Template-Aufnahme (GUI)")
+    print("  Elba-Bot – Suchbereiche festlegen")
     print("=" * 55)
+    print()
+    print("  Die Template-Bilder liegen bereits in templates/ und werden")
+    print("  hier NICHT neu aufgenommen. Es wird nur pro Schritt ein")
+    print("  Suchbereich gezogen, auf den bot.py die Bildsuche einschränkt.")
     print()
     print("  1. Stelle sicher, dass das Portal im Browser")
     print("     sichtbar und vollständig geladen ist.")
-    print("  2. Pro Template öffnet sich ein Vollbild-Overlay.")
-    print("  3. Ziehe einen Rahmen um den Button.")
-    print("  4. Bestätige die Vorschau mit 'Speichern'.")
+    print("  2. Pro Schritt öffnet sich ein Vollbild-Overlay.")
+    print("  3. Ziehe einen Rahmen um den Bereich, in dem der jeweilige")
+    print("     Button/Dialog immer erscheint.")
+    print("  4. Bestätige die Vorschau mit 'Übernehmen'.")
+    print("  5. ESC = Schritt überspringen (bestehender Wert bleibt erhalten).")
     print()
     input("  Enter drücken um zu starten …")
     print()
 
+    # Bestehende Datei laden, damit übersprungene Schritte ihren alten Wert behalten
+    try:
+        with open(STEP_REGIONS_FILE, "r", encoding="utf-8") as f:
+            regions = json.load(f)
+    except Exception:
+        regions = {}
+
     results = []
-    for save_path, label in TEMPLATES:
-        print(f"\n► Nächstes Template: {label}")
+    for key, label in STEPS:
+        print(f"\n► Nächster Suchbereich: {label}")
         try:
-            ok = capture_one(save_path, label)
+            outcome = capture_step_region(label)
         except Exception as exc:
             print(f"  FEHLER: {exc}")
-            ok = False
-        results.append((save_path, label, ok))
+            outcome = None
+
+        if isinstance(outcome, tuple):
+            x, y, w, h = outcome
+            regions[key] = {"x": x, "y": y, "w": w, "h": h}
+            print(f"  ✓  Bereich übernommen: {regions[key]}")
+            results.append((key, label, True))
+        else:
+            print("  ÜBERSPRUNGEN – bestehender Wert (falls vorhanden) bleibt erhalten.")
+            results.append((key, label, False))
+
+    with open(STEP_REGIONS_FILE, "w", encoding="utf-8") as f:
+        json.dump(regions, f, indent=2, ensure_ascii=False)
 
     print()
     print("=" * 55)
     print("  Ergebnis:")
     print("=" * 55)
-    for save_path, label, ok in results:
+    for key, label, ok in results:
         status = "OK        " if ok else "ÜBERSPRUNGEN"
-        print(f"  [{status}]  {save_path}")
+        print(f"  [{status}]  {key:10s}  {label}")
+    print(f"\n  Gespeichert in: {STEP_REGIONS_FILE}")
     print()
 
-    print("=" * 55)
-    print("  Optional: fester Suchbereich für Flow A & B")
-    print("=" * 55)
-    print("  Schränkt ALLE Button-Suchen (Dropdown, OK, Ja) auf einen")
-    print("  von dir gezogenen Bereich ein, statt den ganzen Bildschirm")
-    print("  bzw. den Bereich um die Maus zu durchsuchen. Verhindert,")
-    print("  dass versehentlich etwas außerhalb des Dialogs erkannt wird.")
-    print("  Ziehe dazu einen Rahmen um den Bereich, in dem der")
-    print("  Bestätigungs-Dialog immer erscheint (z.B. Bildschirmmitte).")
-    print()
-    answer = input("  Jetzt festen Suchbereich ziehen? (j/n): ").strip().lower()
-    if answer == "j":
-        try:
-            region_ok = capture_search_region()
-        except Exception as exc:
-            print(f"  FEHLER: {exc}")
-            region_ok = False
-        status = "OK        " if region_ok else "ÜBERSPRUNGEN"
-        print(f"  [{status}]  {SEARCH_REGION_FILE}")
-    else:
-        print(f"  Übersprungen – {SEARCH_REGION_FILE} bleibt unverändert (falls vorhanden).")
-
-    print()
     print("  Du kannst jetzt 'python bot.py' starten.")
     print()
     input("  Enter drücken zum Beenden …")
